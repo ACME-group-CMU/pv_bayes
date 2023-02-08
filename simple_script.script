@@ -1,0 +1,13 @@
+set quitscript.quitSCAPS
+set script_display_mode.fully_suppressed
+load definitionfile CdTe-base.def
+set errorhandling.overwritefile
+action workingpoint.temperature 300
+action intensity.T 100
+action iv.startv 0.0
+action iv.stopv 1.0
+action iv.increment 0.02
+action iv.doiv
+calculate
+save results.iv output.txt
+

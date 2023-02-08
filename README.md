@@ -1,50 +1,56 @@
-# Bayesian inference for materials parameter extraction, based on JVTi data and SCAPS simulations
-This package contains code in support of the manuscript "Rapid semiconductor device characterization through Bayesian parameter estimation" (*insert full citation*). The code implements a workflow for running large amounts of SCAPS simulations for a range of materials parameters, temperatures, and illuminations, as well as a Bayesian inference approach to using these simulations to extract materials parameters from experimental JVTi data.
+# Running SCAPS in high throughput
+This repo contains code for running SCAPS PV simulations in a Linux CLI via a Python script and [wine](https://www.winehq.org/). Many, many thanks are due to Dr. Daniil Kitchaev, who was instrumental in hacking together the original setup back in 2016-2017 (see repo that this one is forked from).
 
-This code is provided under the MIT license, except the xdummy package redistributed here, which is released under the GPLv2. If you use this package for research purposes, please cite *paper citation* 
+It is worth remarking that SCAPS is really not designed to be run in high-throughput, in a couple of ways: 
 
-# Setting up WINE for running SCAPS in parallel (Ubuntu Linux)
+* It has a scripting language, but even when running in scripting mode, it insists on trying to pop up a window. This is one of the things we have to hack around to run it on an HPC system in a high-throughput way; we do so by starting a "dummy" display server so that it doesn't generate an error; it thinks it's sending the windows somewhere and we can still control the application's behavior from the script.
+* It has some paths to support files etc. internally hardcoded, which means we will need to explicitly make copies of the entire set of files and run them in separate wine instances to avoid things overwriting themselves when we try to run in parallel. This is about a gigabyte of files, so it's not insignificant, but it's not the end of the world since we can do all the copying once before we launch things and then reuse each one serially.
 
-## Setting up 32-bit WINE
-You will need to first install WINE (32 bit since SCAPS is old), and the packages necessary for running the dummy graphics.
+This code is provided under the MIT license.
 
-For WINE, you need to add the 32-bit libraries and the custom wine repository.
-$:~# dpkg --add-architecture i386
-$:~# add-apt-repository ppa:ubuntu-wine/ppa
-$:~# apt-get update
-$:~# apt-get dist-upgrade
-$:~# apt-get install wine1.7
+I will attempt to document how to set everything up from scratch as of December 2022 in case we ever need to do it again; in practice many of this steps will not have to be performed regularly.
 
-For the dummy graphics, install:
-$:~# apt-get install xvfb x11vnc xserver-xorg-video-dummy
+## Setting up reference wine files
+The first step to generate a SCAPS install and its associated support files. This is what I needed to do on my macOS 12.6 machine; if you are running a Unix-based machine that supports wine natively, the Docker cludgery is not necessary.
 
-## Creating reference and execution WINE emulators for SCAPS
-Then, you need to create a baseline WINE VM with SCAPS installed in it - this will serve as the "reference VM":
-$:~# WINEPREFIX=$HOME/pv\_bayes/running\_sims/wine\_reference WINEARCH=win32 winecfg
+1. Install and launch [Docker](https://www.docker.com/products/docker-desktop/).
+2. Download [docker-wine](https://hub.docker.com/r/scottyhardy/docker-wine/):
+    ```
+    curl -O https://raw.githubusercontent.com/scottyhardy/docker-wine/master/docker-wine
+    chmod +x docker-wine
+    ```
+3. Download the [SCAPS](https://scaps.elis.ugent.be/) source files, place them inside a directory (I will assume it is called `SCAPS/` henceforth). Create a subdirectory where the wine files will live; I'm calling that `SCAPS/wine_stuff/`.
+4. Start the docker-wine instance with root privileges and access to that directory (fill in your path appropriately) as a volume (here I've creatively named it `scaps`): `./docker-wine --as-root --force-owner --volume=/path/to/SCAPS:/scaps`. You will now be in a new shell inside of the Docker container.
+5. Install the fake display driver things:
+    ```
+    apt update
+    apt-get install xvfb x11vnc xserver-xorg-video-dummy
+    ```
+6. Install SCAPS in the subdirectory we created by utilizing the `WINEPREFIX` variable (note we also have to specify 32-bit architecture mode; SCAPS is oooold): `WINEPREFIX=/scaps/wine_stuff WINEARCH=win32 wine /scaps/scaps3310/setup.exe` (click through all the default options in the installer window that pops up; you will have to explicitly accept the license agreement. You can also fix the fact that the default version number is wrong (3309 instead of 3310) in the install location; this is not crucial though).
 
-Install SCAPS within this VM so we have a working reference configuration. During the Windows installation, click through all the default setup options.
-WINEPREFIX=$HOME/pv\_bayes/running\_sims/wine\_reference WINEARCH=win32 wine pv\_bayes/running_sims/scaps\_src/setup.exe
+Hooray! Now we have a set of reference files with a SCAPS installation! (You can confirm this by starting up docker-wine again and, inside it, running `WINEPREFIX=/scaps/wine_stuff WINEARCH=win32 wine /scaps/wine_stuff/drive_c/Program\ Files/Scaps3309/scaps3310.exe` (or with the 3309 fixed if you did that, this is what the path will be with all the defaults))
+
+## Running a single simulation
+A useful place to start before we get into the high-throughput parallel execution stuff is making sure we can run a single simulation. We'll do this without any of the Python machinery, just straight from the command line, step by step.
+
+**NOTE:** Henceforth, this all should be possible inside docker-wine AS WELL AS on TRACE using a set of the created `wine_stuff` files as described above. You will have to modify the paths accordingly in either case.
+
+First, save a copy of `simple_script.script` into the `script/` subdirectory inside the `Scaps3309/` directory (where `scaps3310.exe` was installed). Then, run:
+
+```bash
+WINEDEBUG=-all WINEPREFIX=/path/to/wine_stuff WINEARCH=win32 xvfb-run -a wine /path/to/wine_stuff/drive_c/Program\ Files/Scaps3309/scaps3310.exe simple_script.script
+```
+This will open SCAPS (with the GUI piped to the virtual X buffer), run the script (which simply calculates an IV curve for a basic CdTe device), and save it. The output file should appear in the `results/` subdirectory within the `Scaps3309/` directory.
+
+
+## Creating execution WINE emulators for SCAPS
 
 Now create a folder that will contain the execution VMs for SCAPS, each a clone of the reference setup. There needs to be enough of these for all the threads you want to run - in this example, there will be 32, each in a folder called proc0, proc1, ..., proc31
+```
 $:~# mkdir $HOME/scaps\_exec
 $:~# for i in \`seq 0 31\`; do cp –r $HOME/pv\_bayes/running\_sims/wine\_reference $HOME/scaps\_exec/proc$i; done`
+```
 
-The reason this is necessary is SCAPS has hardcoded paths so parallel SCAPS processes overwrite each other. The easy solution is then to run them in separate emulators.
-
-## Starting dummy video driver
-Since SCAPS also requires access to a display, even in script-mode, you have to run a display emulator. This is provided either by xvfb or by the xdummy script.
-
-By default, the system is set to use xvfb-run to launch the headless wine instances. If xvfb is not available however, you can take the following route to use the xdummy script instead. In this case, you will need to remove the section 'xvfb-run -a' from the wine run command in run_scaps_parallel.py:
-
-First, compile xdummy:
-$:~# cd ~/pv\_bayes/running\_sims
-$:running\_sims# ./xdummy -install
-
-Afterwards, start the dummy X-server and give it a display number (here, it is :99)
-$:~# ~/pv_bayes/running\_sims/xdummy :99
-
-The X-server will continue running until you kill it, either using ctrl-C or by killing the process:
-$:~# pkill Xorg
 
 # Foward simulations: Running SCAPS in parallel
 SCAPS can be run through a python script once the dummy x-server is running or xvfb is set up.
