@@ -2,7 +2,7 @@
 
 from __future__ import unicode_literals, division
 
-__author__ = "Rachel Kurchin, Riley Brandt, Daniil Kitchaev"
+__author__ = "Rachel Kurchin, Riley Brandt, Daniil Kitchaev, and JDrew"
 __date__ = "May 17, 2017"
 
 from run_scaps_parallel import SCAPSrunner
